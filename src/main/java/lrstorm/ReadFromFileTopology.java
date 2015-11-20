@@ -94,6 +94,43 @@ public class ReadFromFileTopology {
 				new ViperBolt(new Fields("posrep"), new CheckNewSegment()))
 				.shuffleGrouping("filter");
 
+		// CHECK WHICH TUPLES REFER TO A VEHICLE ENTERING A NEW SEGMENT
+
+		class DetectAccidentsFunction implements BoltFunction {
+
+			private DetectAccidentOperator detectAccidentsOp;
+
+			public List<Values> process(Tuple arg0) {
+				List<Values> results = new ArrayList<Values>();
+				LRTuple lrTuple = (LRTuple) arg0.getValueByField("posrep");
+
+				ArrayList<AccidentTuple> collector = new ArrayList<AccidentTuple>();
+				detectAccidentsOp.run(lrTuple, collector);
+
+				// TODO this could be optimized
+				for (AccidentTuple t : collector)
+					results.add(t.toValues());
+
+				return results;
+			}
+
+			@SuppressWarnings("rawtypes")
+			public void prepare(Map arg0, TopologyContext arg1) {
+				detectAccidentsOp = new DetectAccidentOperator();
+			}
+
+			public List<Values> receivedFlush(Tuple arg0) {
+				return new ArrayList<Values>();
+			}
+
+		}
+		builder.setBolt(
+				"checkAccidents",
+				new ViperBolt(
+						new Fields("segment", "isAccident", "accidentTS"),
+						new DetectAccidentsFunction())).shuffleGrouping(
+				"filter");
+
 		// LOG checkNewSegment TO DISK (TEMPORARY)
 
 		builder.setBolt("checkNewSegmentSink", new CSVSink(new CSVFileWriter() {
@@ -105,6 +142,20 @@ public class ReadFromFileTopology {
 			}
 
 		}), 1).shuffleGrouping("checkNewSegment");
+
+		// LOG checkAccidents TO DISK (TEMPORARY)
+
+		builder.setBolt("checkAccidentsSink", new CSVSink(new CSVFileWriter() {
+
+			@Override
+			protected String convertTupleToLine(Tuple t) {
+				return t.getStringByField("segment") + ","
+						+ t.getBooleanByField("isAccident") + ","
+						+ t.getLongByField("accidentTS");
+
+			}
+
+		}), 1).shuffleGrouping("checkAccidents");
 
 		// LOG RESULTS TO DISK
 
@@ -134,6 +185,8 @@ public class ReadFromFileTopology {
 				"/Users/vinmas/repositories/lrstorm/logs/lr.out");
 		conf.put("checkNewSegmentSink.0.filepath",
 				"/Users/vinmas/repositories/lrstorm/logs/lr_newvehicles.out");
+		conf.put("checkAccidentsSink.0.filepath",
+				"/Users/vinmas/repositories/lrstorm/logs/lr_accidents.out");
 
 		if (!local) {
 			conf.setNumWorkers(1);

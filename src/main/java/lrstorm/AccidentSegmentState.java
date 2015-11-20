@@ -50,11 +50,18 @@ public class AccidentSegmentState {
 
 	}
 
-	// VINCENZO This method was returning a tuple saying whether we have a
-	// newacc or a cleared one, need to get these values in some other ways at
-	// this point
-	public void updateSegmentState(int vid, long time, int xway, int lane,
-			int segment, int position, int speed) {
+	public class UpdateSegmentAnswer {
+		public boolean cleared;
+		public boolean newacc;
+
+		public UpdateSegmentAnswer(boolean cleared, boolean newacc) {
+			this.cleared = cleared;
+			this.newacc = newacc;
+		}
+	}
+
+	public UpdateSegmentAnswer updateSegmentState(int vid, long time, int xway,
+			int lane, int segment, int position, int speed) {
 		Vehicle v = this.addVehicle(vid, time, xway, lane, segment, position,
 				speed);
 		boolean cleared = false;
@@ -66,7 +73,7 @@ public class AccidentSegmentState {
 		} else {
 			cleared = addRunningVehicle(v);
 		}
-		// return new Tuple2<Boolean, Boolean>(newacc, cleared);
+		return new UpdateSegmentAnswer(cleared, newacc);
 	}
 
 	private boolean addRunningVehicle(Vehicle v) {
