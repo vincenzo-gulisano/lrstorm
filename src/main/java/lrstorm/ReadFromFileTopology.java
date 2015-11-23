@@ -75,8 +75,8 @@ public class ReadFromFileTopology {
 			public List<Values> process(Tuple arg0) {
 				List<Values> results = new ArrayList<Values>();
 				LRTuple lrTuple = (LRTuple) arg0.getValueByField("posrep");
-				if (detectNewVehicles.isThisANewVehicle(lrTuple))
-					results.add(new Values(lrTuple));
+				results.add(new Values(lrTuple, detectNewVehicles
+						.isThisANewVehicle(lrTuple)));
 				return results;
 			}
 
@@ -90,11 +90,12 @@ public class ReadFromFileTopology {
 			}
 
 		}
-		builder.setBolt("checkNewSegment",
-				new ViperBolt(new Fields("posrep"), new CheckNewSegment()))
-				.shuffleGrouping("filter");
+		builder.setBolt(
+				"checkNewSegment",
+				new ViperBolt(new Fields("posrep", "newSeg"),
+						new CheckNewSegment())).shuffleGrouping("filter");
 
-		// CHECK WHICH TUPLES REFER TO A VEHICLE ENTERING A NEW SEGMENT
+		// CHECK FOR ACCIDENTS
 
 		class DetectAccidentsFunction implements BoltFunction {
 
@@ -124,6 +125,7 @@ public class ReadFromFileTopology {
 			}
 
 		}
+
 		builder.setBolt(
 				"checkAccidents",
 				new ViperBolt(
@@ -138,7 +140,8 @@ public class ReadFromFileTopology {
 			@Override
 			protected String convertTupleToLine(Tuple t) {
 				LRTuple lrTuple = (LRTuple) t.getValueByField("posrep");
-				return lrTuple.toString();
+				boolean newSegment = t.getBooleanByField("newSeg");
+				return lrTuple.toString() + "," + newSegment;
 			}
 
 		}), 1).shuffleGrouping("checkNewSegment");
@@ -168,6 +171,24 @@ public class ReadFromFileTopology {
 			}
 
 		}), 1).shuffleGrouping("filter");
+
+		// MERGE ACCIDENTS AND VEHICLES
+
+		class Merger extends BoltFunctionBase {
+
+			@Override
+			public List<Values> process(Tuple arg0) {
+				List<Values> results = new ArrayList<Values>();
+				System.out.println(arg0.getSourceComponent() + "/"
+						+ arg0.getSourceStreamId() + "/" + arg0.getSourceTask()
+						+ ": " + arg0.toString());
+				return results;
+			}
+
+		}
+		builder.setBolt("merger", new ViperBolt(new Fields(), new Merger()))
+				.shuffleGrouping("checkNewSegment")
+				.shuffleGrouping("checkAccidents");
 
 		// CONFIGURE TOPOLOGY AND SUBMIT
 
