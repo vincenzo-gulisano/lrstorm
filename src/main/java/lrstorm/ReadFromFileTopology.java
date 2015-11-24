@@ -1,8 +1,10 @@
 package lrstorm;
 
 import java.util.ArrayList;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 
 import operator.csvSink.CSVFileWriter;
 import operator.csvSink.CSVSink;
@@ -109,8 +111,12 @@ public class ReadFromFileTopology {
 				detectAccidentsOp.run(lrTuple, collector);
 
 				// TODO this could be optimized
-				for (AccidentTuple t : collector)
+				if (collector.isEmpty())
+				for (AccidentTuple t : collector) {
+					Values v = t.toValues();
+					v.add(false);
 					results.add(t.toValues());
+				}
 
 				return results;
 			}
@@ -126,12 +132,12 @@ public class ReadFromFileTopology {
 
 		}
 
+		// TODO isAccident is nto an appropriate name for the field
 		builder.setBolt(
 				"checkAccidents",
-				new ViperBolt(
-						new Fields("segment", "isAccident", "accidentTS"),
-						new DetectAccidentsFunction())).shuffleGrouping(
-				"filter");
+				new ViperBolt(new Fields("segment", "isAccident", "accidentTS",
+						"isHeartBeat"), new DetectAccidentsFunction()))
+				.shuffleGrouping("filter");
 
 		// LOG checkNewSegment TO DISK (TEMPORARY)
 
@@ -174,15 +180,108 @@ public class ReadFromFileTopology {
 
 		// MERGE ACCIDENTS AND VEHICLES
 
-		class Merger extends BoltFunctionBase {
+		class Merger implements BoltFunction {
 
-			@Override
+			Queue<Tuple> accidentsQueue;
+			boolean receivedAccidentsFlush;
+			Queue<Tuple> vehiclesQueue;
+			boolean receivedVehiclesFlush;
+
+			private void bufferIncomingTuple(Tuple t) {
+				if (t.getSourceComponent().equals("checkNewSegment")) {
+					vehiclesQueue.add(t);
+				} else if (t.getSourceComponent().equals("checkAccidents")) {
+					accidentsQueue.add(t);
+				} else
+					throw new RuntimeException(
+							"Unknown source component for tuple " + t);
+			}
+
+			private List<Tuple> getReadyTuples() {
+				List<Tuple> result = new ArrayList<Tuple>();
+				while (!accidentsQueue.isEmpty() && !vehiclesQueue.isEmpty()) {
+
+					long accidentTS = accidentsQueue.peek().getLongByField(
+							"accidentTS");
+					LRTuple posrep = (LRTuple) vehiclesQueue.peek()
+							.getValueByField("posrep");
+
+					if (accidentTS <= posrep.time) {
+						result.add(accidentsQueue.poll());
+					} else {
+						result.add(vehiclesQueue.poll());
+					}
+				}
+				return result;
+			}
+
 			public List<Values> process(Tuple arg0) {
+
 				List<Values> results = new ArrayList<Values>();
-				System.out.println(arg0.getSourceComponent() + "/"
-						+ arg0.getSourceStreamId() + "/" + arg0.getSourceTask()
-						+ ": " + arg0.toString());
+
+				bufferIncomingTuple(arg0);
+				List<Tuple> readyTuples = getReadyTuples();
+				for (Tuple t : readyTuples) {
+					System.out.println(t.getSourceComponent() + "/"
+							+ t.getSourceStreamId() + "/" + t.getSourceTask()
+							+ ": " + t.toString());
+				}
 				return results;
+			}
+
+			public void prepare(Map arg0, TopologyContext arg1) {
+				accidentsQueue = new LinkedList<Tuple>();
+				vehiclesQueue = new LinkedList<Tuple>();
+				receivedAccidentsFlush = false;
+				receivedVehiclesFlush = false;
+			}
+
+			public List<Values> receivedFlush(Tuple t) {
+				if (t.getSourceComponent().equals("checkNewSegment")) {
+					receivedVehiclesFlush = true;
+				} else if (t.getSourceComponent().equals("checkAccidents")) {
+					receivedAccidentsFlush = true;
+				}
+
+				if (receivedVehiclesFlush && receivedAccidentsFlush) {
+					List<Values> results = new ArrayList<Values>();
+
+					List<Tuple> readyTuples = getReadyTuples();
+					for (Tuple readyT : readyTuples) {
+						System.out.println(readyT.getSourceComponent() + "/"
+								+ readyT.getSourceStreamId() + "/"
+								+ readyT.getSourceTask() + ": "
+								+ readyT.toString());
+					}
+
+					System.out.println("this.accidentsQueue.size(): "
+							+ this.accidentsQueue.size());
+					System.out.println("this.vehiclesQueue.size(): "
+							+ this.vehiclesQueue.size());
+
+					assert ((this.vehiclesQueue.isEmpty() && !this.accidentsQueue
+							.isEmpty()) || (!this.vehiclesQueue.isEmpty() && this.accidentsQueue
+							.isEmpty()));
+					if (this.vehiclesQueue.isEmpty())
+						while (!this.accidentsQueue.isEmpty()) {
+							Tuple out = this.accidentsQueue.poll();
+							System.out.println(out.getSourceComponent() + "/"
+									+ t.getSourceStreamId() + "/"
+									+ out.getSourceTask() + ": "
+									+ out.toString());
+						}
+					if (this.accidentsQueue.isEmpty())
+						while (!this.vehiclesQueue.isEmpty()) {
+							Tuple out = this.vehiclesQueue.poll();
+							System.out.println(out.getSourceComponent() + "/"
+									+ t.getSourceStreamId() + "/"
+									+ out.getSourceTask() + ": "
+									+ out.toString());
+						}
+
+					return results;
+				}
+				return null;
 			}
 
 		}
